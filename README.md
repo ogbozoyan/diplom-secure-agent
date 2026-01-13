@@ -23,3 +23,9 @@ migrations/
   001_init.sql              # таблицы + индексы pgvector
 pyproject.toml              # uv
 ```
+
+Запуск
+
+```bash
+uv run uvicorn main:app --reload
+```
