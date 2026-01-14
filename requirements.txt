@@ -8,6 +8,9 @@ langgraph
 langchain
 langchain-openai
 langchain-postgres
+llm-guard
 
 pypdf
 python-docx
+
+colorlog
