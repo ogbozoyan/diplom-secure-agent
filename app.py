@@ -61,7 +61,7 @@ def api_chat( req: ChatRequest ) -> dict[str, Any]:
     question = req.question.strip()
     secure = bool(req.secure)
 
-    _log.info("chat: start secure=%s question=%d", secure, question)
+    _log.info("chat: start secure=%s question=%s", secure, question)
     try:
         resp = run_graph(question = question, secure = secure)
         _log.info(

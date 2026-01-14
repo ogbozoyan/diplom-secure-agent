@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import io
+
+from PIL import Image
 from langchain_core.documents import Document
 from langchain_openai import ChatOpenAI
 from langgraph.graph.state import CompiledStateGraph
@@ -582,9 +585,19 @@ def select_graph( isSecureMode: object ) -> CompiledStateGraph[Any, Any, Any, An
     """Выбор графа."""
     if isSecureMode:
         _log.info("Using secure RAG graph")
-        return build_rag_graph_secure()
+        graph = build_rag_graph_secure()
+        save_graph_png(graph, file_name = "secure_graph.png")
+        return graph
     _log.info("Using vulnerable RAG graph")
-    return build_rag_graph_vulnerable()
+    graph = build_rag_graph_vulnerable()
+    save_graph_png(graph, file_name = "in_secure_graph.png")
+    return graph
+
+
+def save_graph_png( graph: CompiledStateGraph[Any, Any, Any, Any], file_name: str ):
+    png_bytes = graph.get_graph().draw_mermaid_png()
+    graph_img = Image.open(io.BytesIO(png_bytes))
+    graph_img.save(file_name)
 
 
 def run_graph( question: str, secure: bool ) -> dict[str, Any]:
