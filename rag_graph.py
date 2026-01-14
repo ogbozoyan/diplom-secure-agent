@@ -110,10 +110,12 @@ class _GuardBundle(TypedDict):
 def _get_guard_bundle( ) -> Optional[_GuardBundle]:
     """Создаёт LLM Guard scanners один раз на процесс. Если пакет не установлен — возвращает None."""
     if not _llm_guard_enabled():
+        _log.info("guard_bundle_check enabled=%s", _llm_guard_enabled())
         return None
 
     bundle: Any | None = getattr(_get_guard_bundle, "_instance", None)
     if bundle is not None:
+        _log.debug("guard_bundle_reuse instance=hit")
         return bundle
 
     try:
@@ -178,7 +180,13 @@ def _get_guard_bundle( ) -> Optional[_GuardBundle]:
 def _scan_llm_guard_prompt( stage: str, text: str, scanners: list[Any] ) -> dict[str, Any]:
     """Единая обвязка вокруг scan_prompt(). Возвращает нормализованный результат."""
     bundle: _GuardBundle | None = _get_guard_bundle()
+    _log.info(
+        "guard_scan_prompt_start stage=%s text_len=%s scanners=%s",
+        stage, len(text or ""), len(scanners or []),
+    )
+
     if bundle is None:
+        _log.info("guard_scan_prompt_skip stage=%s reason=disabled", stage)
         return { "enabled": False, "decision": "SKIP", "reason": "llm-guard disabled/not installed", "stage": stage }
 
     try:
@@ -186,6 +194,14 @@ def _scan_llm_guard_prompt( stage: str, text: str, scanners: list[Any] ) -> dict
             scanners, text, fail_fast = _llm_guard_fail_fast(),
         )
         invalid = [k for k, v in results_valid.items() if not v]
+        _log.info(
+            "guard_scan_prompt_done stage=%s decision=%s invalid=%s text_len=%s sanitized_len=%s",
+            stage,
+            ("BLOCK" if invalid else "ALLOW"),
+            invalid,
+            len(text or ""),
+            len((sanitized or "") or ""),
+        )
         decision = "BLOCK" if invalid else "ALLOW"
         return {
             "enabled": True,
@@ -196,6 +212,7 @@ def _scan_llm_guard_prompt( stage: str, text: str, scanners: list[Any] ) -> dict
             "stage": stage,
         }
     except Exception as e:
+        _log.exception("guard_scan_prompt_error stage=%s fail_closed=%s", stage, _llm_guard_fail_closed())
         if _llm_guard_fail_closed():
             return { "enabled": True, "decision": "BLOCK", "reason": f"scanner_error:{e}", "stage": stage }
         return { "enabled": True, "decision": "ALLOW", "reason": f"scanner_error_fail_open:{e}", "stage": stage }
@@ -203,8 +220,14 @@ def _scan_llm_guard_prompt( stage: str, text: str, scanners: list[Any] ) -> dict
 
 def _scan_llm_guard_output( stage: str, prompt_text: str, output_text: str ) -> dict[str, Any]:
     """Единая обвязка вокруг scan_output(). Возвращает нормализованный результат."""
+    _log.info(
+        "guard_scan_output_start stage=%s prompt_len=%s output_len=%s",
+        stage, len(prompt_text or ""), len(output_text or ""),
+    )
+
     bundle = _get_guard_bundle()
     if bundle is None:
+        _log.info("guard_scan_output_skip stage=%s reason=disabled", stage)
         return { "enabled": False, "decision": "SKIP", "reason": "llm-guard disabled/not installed", "stage": stage }
 
     try:
@@ -215,6 +238,14 @@ def _scan_llm_guard_output( stage: str, prompt_text: str, output_text: str ) -> 
             fail_fast = _llm_guard_fail_fast(),
         )
         invalid = [k for k, v in results_valid.items() if not v]
+        _log.info(
+            "guard_scan_output_done stage=%s decision=%s invalid=%s output_len=%s sanitized_len=%s",
+            stage,
+            ("BLOCK" if invalid else "ALLOW"),
+            invalid,
+            len(output_text or ""),
+            len((sanitized or "") or ""),
+        )
         decision = "BLOCK" if invalid else "ALLOW"
         return {
             "enabled": True,
@@ -225,6 +256,7 @@ def _scan_llm_guard_output( stage: str, prompt_text: str, output_text: str ) -> 
             "stage": stage,
         }
     except Exception as e:
+        _log.exception("guard_scan_output_error stage=%s fail_closed=%s", stage, _llm_guard_fail_closed())
         if _llm_guard_fail_closed():
             return { "enabled": True, "decision": "BLOCK", "reason": f"scanner_error:{e}", "stage": stage }
         return { "enabled": True, "decision": "ALLOW", "reason": f"scanner_error_fail_open:{e}", "stage": stage }
@@ -232,12 +264,16 @@ def _scan_llm_guard_output( stage: str, prompt_text: str, output_text: str ) -> 
 
 def _messages_to_prompt_text( messages: list[Any] ) -> str:
     """Свести список сообщений в строку (для output scanners, которым полезен контекст промпта)."""
+    _log.info("messages_to_prompt_text_start messages=%s", len(messages or []))
+
     parts: list[str] = []
     for message in messages:
         role = getattr(message, "type", None) or message.__class__.__name__
         content = getattr(message, "content", "")
         parts.append(f"[{role}]\n{content}")
-    return "\n\n".join(parts)
+    prompt_text = "\n\n".join(parts)
+    _log.info("messages_to_prompt_text_done chars=%s", len(prompt_text))
+    return prompt_text
 
 
 # -----------------------------
@@ -245,12 +281,27 @@ def _messages_to_prompt_text( messages: list[Any] ) -> str:
 # -----------------------------
 def _retrieve( state: RAGState ) -> dict[str, Any]:
     """Retrieval: получаем top_k чанков и кладём в evidence."""
+
     question: str = state["question"]
     top_k: int = int(state.get("top_k", 3))
+
+    _log.info(
+        "retrieve_start top_k=%s question_len=%s question_sample=%s",
+        top_k,
+        len(question or ""),
+        (question or "")[:200],
+    )
 
     docs: list[Document] = pg_engine.similarity_search(question, k = top_k)
     evidence: list[str] = [d.page_content for d in docs]
 
+    _log.info(
+        "retrieve_evidence chunks=%s total_chars=%s chunk_lens=%s",
+        len(evidence),
+        sum(len(x or "") for x in evidence),
+        [len(x or "") for x in evidence],
+    )
+    _log.info("retrieve_docs docs=%s", len(docs))
     return { "evidence": evidence }
 
 
@@ -258,7 +309,10 @@ def _invoke_llm( state: RAGState ) -> dict[str, Any]:
     """Вызов LLM (через providers.py)."""
     llm: ChatOpenAI = init_llm()
     messages: list[Any] = state["messages"]
+
+    _log.info("llm_start messages=%s", len(messages or []))
     resp: AIMessage = llm.invoke(messages)
+    _log.info("llm_done answer_len=%s", len(getattr(resp, "content", str(resp)) or ""))
     return { "answer": getattr(resp, "content", str(resp)) }
 
 
@@ -276,6 +330,12 @@ def _build_prompt_vulnerable( state: RAGState ) -> dict[str, Any]:
     q: str = state["question"]
     raw_context: LiteralString = "\n\n".join(state.get("evidence", []))
 
+    _log.info(
+        "prompt_vulnerable_start q_len=%s evidence_chunks=%s",
+        len(q or ""),
+        len(state.get("evidence", []) or []),
+    )
+
     system: str = (
         "You are a helpful assistant.\n"
         "Follow the SYSTEM RULES (DO NOT IGNORE):\n"
@@ -283,10 +343,16 @@ def _build_prompt_vulnerable( state: RAGState ) -> dict[str, Any]:
         "Now answer the user."
     )
 
+    _log.info("prompt_vulnerable_context_chars=%s", len(raw_context or ""))
     messages = [
         SystemMessage(content = system),
         HumanMessage(content = q),
     ]
+    _log.info(
+        "prompt_vulnerable_messages system_len=%s user_len=%s",
+        len(system or ""),
+        len(q or ""),
+    )
     return { "messages": messages, "prompt_text": _messages_to_prompt_text(messages) }
 
 
@@ -308,20 +374,29 @@ def build_rag_graph_vulnerable( ) -> CompiledStateGraph[Any, Any, Any, Any]:
 # -----------------------------
 def _guard_input( state: RAGState ) -> dict[str, Any]:
     """Проверка пользовательского ввода (prompt-injection/jailbreak сигналы) через LLM Guard."""
+
     q = state["question"]
+    _log.info("guard_input_start q_len=%s q_sample=%s", len(q or ""), (q or "")[:200])
 
     bundle = _get_guard_bundle()
     if bundle is None:
+        _log.info("guard_input_skip reason=no_bundle")
         events = list(state.get("guard_events", []))
         events.append({ "stage": "input", "enabled": False, "decision": "SKIP" })
         return { "blocked": False, "guard_events": events }
 
     res = _scan_llm_guard_prompt(stage = "input", text = q, scanners = bundle["input_scanners"])
-
+    _log.info(
+        "guard_input_result decision=%s reason=%s",
+        res.get("decision"),
+        res.get("reason"),
+    )
     events = list(state.get("guard_events", []))
     events.append({ **res })
 
     if res["decision"] == "BLOCK":
+        _log.warning("guard_input_blocked reason=%s", res.get("reason"))
+
         return {
             "blocked": True,
             "block_reason": f"input_block:{res.get('reason')}",
@@ -331,31 +406,49 @@ def _guard_input( state: RAGState ) -> dict[str, Any]:
 
     # Используем санитайзинг (например, invisible text удалится)
     sanitized_q = res.get("sanitized") or q
+    _log.info("guard_input_allow sanitized_changed=%s", (sanitized_q != q))
     return { "blocked": False, "question": sanitized_q, "guard_events": events }
 
 
 def _guard_context( state: RAGState ) -> dict[str, Any]:
     """Проверка retrieved-контента: удаляем (или санитизируем) фрагменты с признаками indirect injection."""
+
     evidence = list(state.get("evidence", []))
     filtered: list[str] = []
+
+    _log.info("guard_context_start chunks=%s", len(evidence or []))
 
     bundle = _get_guard_bundle()
     events = list(state.get("guard_events", []))
 
     if bundle is None:
+        _log.info("guard_context_skip chunks=%s reason=no_bundle", len(evidence or []))
+
         # без LLM Guard — пропускаем как есть
         events.append({ "stage": "context", "enabled": False, "decision": "SKIP", "chunks": len(evidence) })
         return { "evidence_filtered": evidence, "guard_events": events }
 
     for idx, chunk in enumerate(evidence):
+        _log.info("guard_context_scan_chunk idx=%s len=%s sample=%s", idx, len(chunk or ""), (chunk or "")[:160])
+
         res = _scan_llm_guard_prompt(stage = "context", text = chunk, scanners = bundle["context_scanners"])
+
+        _log.info(
+            "guard_context_chunk_result idx=%s decision=%s reason=%s",
+            idx,
+            res.get("decision"),
+            res.get("reason"),
+        )
+
         events.append({ "chunk": idx, **res })
 
         if res["decision"] == "BLOCK":
+            _log.warning("guard_context_chunk_blocked idx=%s reason=%s", idx, res.get("reason"))
             continue
 
         filtered.append(res.get("sanitized") or chunk)
 
+    _log.info("guard_context_done kept=%s dropped=%s", len(filtered), (len(evidence) - len(filtered)))
     return { "evidence_filtered": filtered, "guard_events": events }
 
 
@@ -363,6 +456,13 @@ def _build_prompt_secure( state: RAGState ) -> dict[str, Any]:
     """Безопасная сборка prompt: изоляция данных/инструкций + явная маркировка untrusted контекста."""
     q = state["question"]
     ctx = "\n\n".join(state.get("evidence_filtered") or state.get("evidence", []))
+
+    _log.info(
+        "prompt_secure_start q_len=%s ctx_chunks=%s ctx_chars=%s",
+        len(q or ""),
+        len((state.get("evidence_filtered") or state.get("evidence", [])) or []),
+        len(ctx or ""),
+    )
 
     system = (
         "You are a security-aware RAG assistant.\n"
@@ -385,18 +485,26 @@ def _build_prompt_secure( state: RAGState ) -> dict[str, Any]:
     )
 
     messages = [SystemMessage(content = system), HumanMessage(content = user)]
+    _log.info(
+        "prompt_secure_messages system_len=%s user_len=%s",
+        len(system or ""),
+        len(user or ""),
+    )
     return { "messages": messages, "prompt_text": _messages_to_prompt_text(messages) }
 
 
 def _guard_output( state: RAGState ) -> dict[str, Any]:
     """Пост-обработка ответа (output handling): policy/content/code checks через LLM Guard."""
     ans: str = state.get("answer", "")
+    _log.info("guard_output_start ans_len=%s", len(ans or ""))
     prompt_text: str = state.get("prompt_text") or _messages_to_prompt_text(state.get("messages", []))
 
     events: list[dict[str, Any]] = list(state.get("guard_events", []))
     bundle: _GuardBundle | None = _get_guard_bundle()
 
     if bundle is None:
+        _log.info("guard_output_skip reason=no_bundle max_chars=%s", int(os.getenv("OUTPUT_MAX_CHARS", "12000")))
+
         events.append({ "stage": "output", "enabled": False, "decision": "SKIP" })
         # всё равно применим минимальные "fail-safe" ограничения
         max_chars = int(os.getenv("OUTPUT_MAX_CHARS", "12000"))
@@ -405,15 +513,27 @@ def _guard_output( state: RAGState ) -> dict[str, Any]:
         return { "answer": ans, "guard_events": events }
 
     res = _scan_llm_guard_output(stage = "output", prompt_text = prompt_text, output_text = ans)
+    _log.info(
+        "guard_output_result decision=%s reason=%s",
+        res.get("decision"),
+        res.get("reason"),
+    )
+
     events.append({ **res })
 
     if res["decision"] == "BLOCK":
+        _log.warning("guard_output_blocked reason=%s", res.get("reason"))
         return {
             "answer": "Ответ был заблокирован политикой безопасности (output).",
             "guard_events": events,
         }
 
     sanitized_ans = res.get("sanitized") or ans
+    _log.info(
+        "guard_output_sanitized changed=%s sanitized_len=%s",
+        ((res.get("sanitized") or ans) != ans),
+        len((res.get("sanitized") or ans) or ""),
+    )
 
     # Базовая «fail-safe» нормализация:
     max_chars = int(os.getenv("OUTPUT_MAX_CHARS", "12000"))
@@ -436,7 +556,9 @@ def build_rag_graph_secure( ) -> CompiledStateGraph[Any, Any, Any, Any]:
     graph.add_edge(START, "guard_input")
 
     def _route_after_input( state: RAGState ) -> str:
-        return "blocked" if state.get("blocked") else "ok"
+        decision = "blocked" if state.get("blocked") else "ok"
+        _log.info("route_after_input decision=%s", decision)
+        return decision
 
     graph.add_conditional_edges(
         "guard_input",
@@ -466,12 +588,20 @@ def select_graph( isSecureMode: object ) -> CompiledStateGraph[Any, Any, Any, An
 
 
 def run_graph( question: str, secure: bool ) -> dict[str, Any]:
+    _log.info("run_graph_start question_len=%s secure=%s", len(question or ""), secure)
+
     state: RAGState = RAGState(
         question = question,
         top_k = config.DEFAULT_TOP_K,
     )
 
     out: dict[str, Any] = select_graph(secure).invoke(state)
+
+    _log.info(
+        "run_graph_invoke_done answer_len=%s evidence_count=%s",
+        len(out.get("answer", "")),
+        len(out.get("evidence_filtered") or out.get("evidence") or []),
+    )
 
     # In secure mode the pipeline may filter chunks and/or block the request.
     evidence = out.get("evidence_filtered") or out.get("evidence") or []
@@ -484,9 +614,13 @@ def run_graph( question: str, secure: bool ) -> dict[str, Any]:
     # Optional debug/experiment fields (useful for Chapter 3 metrics).
     if "blocked" in out:
         resp["blocked"] = bool(out.get("blocked"))
+        _log.info("run_graph_blocked status=%s reason=%s", out.get("blocked"), out.get("block_reason"))
     if out.get("block_reason"):
         resp["block_reason"] = out.get("block_reason")
+        _log.info("run_graph_block_reason=%s", out.get("block_reason"))
     if out.get("guard_events"):
         resp["guard_events"] = out.get("guard_events")
+        _log.info("run_graph_guard_events count=%s", len(out.get("guard_events") or []))
 
+    _log.info("run_graph_done response_keys=%s", list(resp.keys()))
     return resp
