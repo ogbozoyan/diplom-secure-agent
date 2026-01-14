@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+python-multipart
+
+psycopg[binary]
+
+langgraph
+langchain
+langchain-openai
+langchain-postgres
+
+pypdf
+python-docx
